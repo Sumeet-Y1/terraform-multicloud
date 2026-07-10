@@ -1,0 +1,32 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# tfvars often contain secrets/environment-specific values — exclude by default
+*.tfvars
+*.tfvars.json
+!envs/**/example.tfvars
+
+# CLI config
+.terraformrc
+terraform.rc
+
+# Lock file (uncomment if you DON'T want to commit it — generally you SHOULD commit this)
+# .terraform.lock.hcl
+
+# Provider credentials / secrets
+*.pem
+*.key
+.env
+
+# JetBrains IDE
+.idea/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+.vscode/
