@@ -1,3 +1,4 @@
+@"
 # Terraform
 **/.terraform/*
 *.tfstate
@@ -6,7 +7,7 @@
 crash.log
 crash.*.log
 
-# tfvars often contain secrets/environment-specific values — exclude by default
+# tfvars often contain secrets/environment-specific values - exclude by default
 *.tfvars
 *.tfvars.json
 !envs/**/example.tfvars
@@ -14,9 +15,6 @@ crash.*.log
 # CLI config
 .terraformrc
 terraform.rc
-
-# Lock file (uncomment if you DON'T want to commit it — generally you SHOULD commit this)
-# .terraform.lock.hcl
 
 # Provider credentials / secrets
 *.pem
@@ -30,3 +28,4 @@ terraform.rc
 .DS_Store
 Thumbs.db
 .vscode/
+"@ | Out-File -Encoding utf8 .gitignore
