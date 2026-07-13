@@ -21,12 +21,26 @@ variable "vnet_cidr" {
   default     = "10.1.0.0/16"
 }
 
-variable "subnets" {
-  description = "Map of subnets: key = subnet name, value = CIDR block"
+variable "public_subnets" {
+  description = "Map of public subnets: key = name suffix, value = CIDR block"
   type        = map(string)
   default = {
-    "public"  = "10.1.1.0/24"
-    "private" = "10.1.2.0/24"
-    "database" = "10.1.3.0/24"
+    "a" = "10.1.1.0/24"
+  }
+}
+
+variable "private_subnets" {
+  description = "Map of private (app) subnets: key = name suffix, value = CIDR block"
+  type        = map(string)
+  default = {
+    "a" = "10.1.11.0/24"
+  }
+}
+
+variable "database_subnets" {
+  description = "Map of database subnets: key = name suffix, value = CIDR block"
+  type        = map(string)
+  default = {
+    "a" = "10.1.21.0/24"
   }
 }
