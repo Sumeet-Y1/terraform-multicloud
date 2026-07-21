@@ -32,3 +32,15 @@ variable "database_subnet_cidr" {
   type        = string
   default     = "10.2.21.0/24"
 }
+
+variable "bastion_allowed_ip_ranges" {
+  description = "CIDR ranges allowed to SSH into the bastion host (e.g. your office/home IP, not 0.0.0.0/0)"
+  type        = list(string)
+  default     = ["203.0.113.0/24"] # placeholder - replace with a real trusted range
+}
+
+variable "enable_flow_logs" {
+  description = "Enable VPC flow logs on subnets for traffic visibility"
+  type        = bool
+  default     = true
+}
