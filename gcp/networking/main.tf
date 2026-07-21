@@ -12,42 +12,63 @@ provider "google" {
   region  = var.region
 }
 
-# VPC — GCP VPCs are global, not tied to a single region (unlike AWS VPC / Azure VNet)
 resource "google_compute_network" "main" {
   name                    = "${var.environment}-vpc"
   auto_create_subnetworks = false
 }
 
 # ---------- SUBNETS ----------
-# Note: GCP subnets are regional resources, even though the VPC itself is global
-
 resource "google_compute_subnetwork" "public" {
   name          = "${var.environment}-public-subnet"
   ip_cidr_range = var.public_subnet_cidr
   region        = var.region
   network       = google_compute_network.main.id
+
+  dynamic "log_config" {
+    for_each = var.enable_flow_logs ? [1] : []
+    content {
+      aggregation_interval = "INTERVAL_5_SEC"
+      flow_sampling        = 0.5
+      metadata              = "INCLUDE_ALL_METADATA"
+    }
+  }
 }
 
 resource "google_compute_subnetwork" "private" {
-  name          = "${var.environment}-private-subnet"
-  ip_cidr_range = var.private_subnet_cidr
-  region        = var.region
-  network       = google_compute_network.main.id
+  name                      = "${var.environment}-private-subnet"
+  ip_cidr_range             = var.private_subnet_cidr
+  region                    = var.region
+  network                   = google_compute_network.main.id
+  private_ip_google_access  = true
 
-  # Allows resources in this subnet to reach Google APIs/services without a public IP
-  private_ip_google_access = true
+  dynamic "log_config" {
+    for_each = var.enable_flow_logs ? [1] : []
+    content {
+      aggregation_interval = "INTERVAL_5_SEC"
+      flow_sampling        = 0.5
+      metadata              = "INCLUDE_ALL_METADATA"
+    }
+  }
 }
 
 resource "google_compute_subnetwork" "database" {
-  name          = "${var.environment}-database-subnet"
-  ip_cidr_range = var.database_subnet_cidr
-  region        = var.region
-  network       = google_compute_network.main.id
-
+  name                     = "${var.environment}-database-subnet"
+  ip_cidr_range            = var.database_subnet_cidr
+  region                   = var.region
+  network                  = google_compute_network.main.id
   private_ip_google_access = true
+
+  dynamic "log_config" {
+    for_each = var.enable_flow_logs ? [1] : []
+    content {
+      aggregation_interval = "INTERVAL_5_SEC"
+      flow_sampling        = 0.5
+      metadata              = "INCLUDE_ALL_METADATA"
+    }
+  }
 }
 
-# ---------- CLOUD ROUTER + NAT (for private subnet outbound internet) ----------
+# ---------- CLOUD ROUTER + NAT ----------
 resource "google_compute_router" "main" {
   name    = "${var.environment}-router"
   region  = var.region
@@ -65,15 +86,20 @@ resource "google_compute_router_nat" "main" {
     name                    = google_compute_subnetwork.private.id
     source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
   }
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
+  }
 }
 
 # ---------- FIREWALL RULES ----------
-# GCP firewall rules are attached to the VPC network, not to a subnet or instance directly.
-# Targeting is done via tags (like Azure's ASGs, but simpler - just string labels)
+# Priorities matter in GCP - lower number = evaluated first. Default is 1000.
 
 resource "google_compute_firewall" "allow_web" {
-  name    = "${var.environment}-allow-web"
-  network = google_compute_network.main.id
+  name     = "${var.environment}-allow-web"
+  network  = google_compute_network.main.id
+  priority = 900
 
   allow {
     protocol = "tcp"
@@ -82,11 +108,16 @@ resource "google_compute_firewall" "allow_web" {
 
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["web"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "allow_app_from_web" {
-  name    = "${var.environment}-allow-app-from-web"
-  network = google_compute_network.main.id
+  name     = "${var.environment}-allow-app-from-web"
+  network  = google_compute_network.main.id
+  priority = 900
 
   allow {
     protocol = "tcp"
@@ -95,11 +126,16 @@ resource "google_compute_firewall" "allow_app_from_web" {
 
   source_tags = ["web"]
   target_tags = ["app"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "allow_db_from_app" {
-  name    = "${var.environment}-allow-db-from-app"
-  network = google_compute_network.main.id
+  name     = "${var.environment}-allow-db-from-app"
+  network  = google_compute_network.main.id
+  priority = 900
 
   allow {
     protocol = "tcp"
@@ -108,6 +144,61 @@ resource "google_compute_firewall" "allow_db_from_app" {
 
   source_tags = ["app"]
   target_tags = ["database"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
-# Deny-all is implicit in GCP — no rule needed. Only explicitly allowed traffic gets through.
+# Bastion host access — SSH only from trusted IP ranges, never 0.0.0.0/0
+resource "google_compute_firewall" "allow_bastion_ssh" {
+  name     = "${var.environment}-allow-bastion-ssh"
+  network  = google_compute_network.main.id
+  priority = 800 # evaluated before the general rules above
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = var.bastion_allowed_ip_ranges
+  target_tags   = ["bastion"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# Allow instances tagged "app" to be reached via SSH ONLY from the bastion, never externally
+resource "google_compute_firewall" "allow_ssh_from_bastion" {
+  name     = "${var.environment}-allow-ssh-from-bastion"
+  network  = google_compute_network.main.id
+  priority = 850
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_tags = ["bastion"]
+  target_tags = ["app", "database"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# Explicit deny-all for anything not matched above (GCP denies by default anyway,
+# but an explicit low-priority deny makes the intent visible for anyone reading the config)
+resource "google_compute_firewall" "deny_all_ingress" {
+  name     = "${var.environment}-deny-all-ingress"
+  network  = google_compute_network.main.id
+  priority = 65534
+  direction = "INGRESS"
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+}
