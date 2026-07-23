@@ -18,7 +18,7 @@ output "primary_blob_endpoint" {
   value       = azurerm_storage_account.main.primary_blob_endpoint
 }
 
-output "container_name" {
-  description = "Name of the blob container"
-  value       = azurerm_storage_container.main.name
+output "container_names" {
+  description = "Names of all created blob containers"
+  value       = { for k, c in azurerm_storage_container.main : k => c.name }
 }
