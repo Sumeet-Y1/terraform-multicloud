@@ -37,7 +37,7 @@ resource "aws_internet_gateway" "main" {
   }
 }
 
-# ---------- PUBLIC SUBNETS ----------
+# ---------- SUBNETS ----------
 resource "aws_subnet" "public" {
   for_each                = var.public_subnets
   vpc_id                  = aws_vpc.main.id
@@ -52,7 +52,6 @@ resource "aws_subnet" "public" {
   }
 }
 
-# ---------- PRIVATE (APP) SUBNETS ----------
 resource "aws_subnet" "private" {
   for_each          = var.private_subnets
   vpc_id            = aws_vpc.main.id
@@ -66,7 +65,6 @@ resource "aws_subnet" "private" {
   }
 }
 
-# ---------- DATABASE SUBNETS ----------
 resource "aws_subnet" "database" {
   for_each          = var.database_subnets
   vpc_id            = aws_vpc.main.id
@@ -80,8 +78,7 @@ resource "aws_subnet" "database" {
   }
 }
 
-# ---------- NAT GATEWAY (for private subnet outbound internet) ----------
-# One Elastic IP per NAT Gateway
+# ---------- NAT GATEWAY ----------
 resource "aws_eip" "nat" {
   for_each = var.public_subnets
   domain   = "vpc"
@@ -92,7 +89,6 @@ resource "aws_eip" "nat" {
   }
 }
 
-# NAT Gateway sits in a public subnet, serves the private subnet in the same AZ
 resource "aws_nat_gateway" "main" {
   for_each      = var.public_subnets
   allocation_id = aws_eip.nat[each.key].id
@@ -107,8 +103,6 @@ resource "aws_nat_gateway" "main" {
 }
 
 # ---------- ROUTE TABLES ----------
-
-# Public route table (single, shared by all public subnets)
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
 
@@ -129,7 +123,6 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Private route tables — one per AZ, each routing through its own NAT Gateway
 resource "aws_route_table" "private" {
   for_each = var.private_subnets
   vpc_id   = aws_vpc.main.id
@@ -151,7 +144,6 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private[each.key].id
 }
 
-# Database subnets — no internet route at all (fully isolated tier)
 resource "aws_route_table" "database" {
   vpc_id = aws_vpc.main.id
 
@@ -167,9 +159,52 @@ resource "aws_route_table_association" "database" {
   route_table_id = aws_route_table.database.id
 }
 
-# ---------- SECURITY GROUPS ----------
+# ---------- VPC ENDPOINT (S3 Gateway) ----------
+# Lets private/database subnets reach S3 without going through the NAT Gateway or internet at all.
+# Saves NAT data processing costs and keeps traffic entirely within AWS's network.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
 
-# Web tier — allows HTTP/HTTPS from anywhere
+  route_table_ids = concat(
+    [for rt in aws_route_table.private : rt.id],
+    [aws_route_table.database.id]
+  )
+
+  tags = {
+    Name        = "${var.environment}-s3-endpoint"
+    Environment = var.environment
+  }
+}
+
+# ---------- SECURITY GROUPS ----------
+resource "aws_security_group" "bastion" {
+  name        = "${var.environment}-bastion-sg"
+  description = "Allow SSH only from trusted IP ranges"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "SSH from trusted ranges"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = var.bastion_allowed_cidrs
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.environment}-bastion-sg"
+    Environment = var.environment
+  }
+}
+
 resource "aws_security_group" "web" {
   name        = "${var.environment}-web-sg"
   description = "Allow HTTP/HTTPS inbound"
@@ -204,10 +239,9 @@ resource "aws_security_group" "web" {
   }
 }
 
-# App tier — only allows traffic from the web tier SG
 resource "aws_security_group" "app" {
   name        = "${var.environment}-app-sg"
-  description = "Allow traffic only from web tier"
+  description = "Allow traffic from web tier and SSH from bastion only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -216,6 +250,14 @@ resource "aws_security_group" "app" {
     to_port         = 8080
     protocol        = "tcp"
     security_groups = [aws_security_group.web.id]
+  }
+
+  ingress {
+    description     = "SSH from bastion only"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.bastion.id]
   }
 
   egress {
@@ -231,10 +273,9 @@ resource "aws_security_group" "app" {
   }
 }
 
-# Database tier — only allows traffic from the app tier SG
 resource "aws_security_group" "database" {
   name        = "${var.environment}-database-sg"
-  description = "Allow traffic only from app tier"
+  description = "Allow traffic only from app tier and SSH from bastion only"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -243,6 +284,14 @@ resource "aws_security_group" "database" {
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.app.id]
+  }
+
+  ingress {
+    description     = "SSH from bastion only"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.bastion.id]
   }
 
   egress {
@@ -254,6 +303,62 @@ resource "aws_security_group" "database" {
 
   tags = {
     Name        = "${var.environment}-database-sg"
+    Environment = var.environment
+  }
+}
+
+# ---------- VPC FLOW LOGS ----------
+resource "aws_cloudwatch_log_group" "flow_logs" {
+  count             = var.enable_flow_logs ? 1 : 0
+  name              = "/aws/vpc/${var.environment}-flow-logs"
+  retention_in_days = var.flow_log_retention_days
+}
+
+resource "aws_iam_role" "flow_logs" {
+  count = var.enable_flow_logs ? 1 : 0
+  name  = "${var.environment}-vpc-flow-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "vpc-flow-logs.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "flow_logs" {
+  count = var.enable_flow_logs ? 1 : 0
+  name  = "${var.environment}-vpc-flow-logs-policy"
+  role  = aws_iam_role.flow_logs[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_flow_log" "main" {
+  count                = var.enable_flow_logs ? 1 : 0
+  vpc_id               = aws_vpc.main.id
+  traffic_type         = "ALL"
+  log_destination_type = "cloud-watch-logs"
+  log_destination      = aws_cloudwatch_log_group.flow_logs[0].arn
+  iam_role_arn         = aws_iam_role.flow_logs[0].arn
+
+  tags = {
+    Name        = "${var.environment}-flow-log"
     Environment = var.environment
   }
 }
