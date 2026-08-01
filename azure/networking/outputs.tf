@@ -28,6 +28,16 @@ output "nat_gateway_id" {
   value       = azurerm_nat_gateway.main.id
 }
 
+output "bastion_host_id" {
+  description = "ID of the Azure Bastion host"
+  value       = azurerm_bastion_host.main.id
+}
+
+output "bastion_dns_name" {
+  description = "DNS name of the Azure Bastion host"
+  value       = azurerm_bastion_host.main.dns_name
+}
+
 output "web_asg_id" {
   description = "ID of the web tier application security group"
   value       = azurerm_application_security_group.web.id
