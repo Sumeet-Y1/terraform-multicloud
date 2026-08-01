@@ -29,6 +29,16 @@ output "router_id" {
 }
 
 output "bastion_firewall_rule" {
-  description = "Name of the bastion SSH firewall rule (for reference/auditing)"
+  description = "Name of the bastion SSH firewall rule"
   value       = google_compute_firewall.allow_bastion_ssh.name
+}
+
+output "private_service_connect_ip" {
+  description = "Reserved internal IP range for Private Service Connect"
+  value       = google_compute_global_address.private_service_connect.address
+}
+
+output "cloud_armor_policy_id" {
+  description = "ID of the Cloud Armor security policy"
+  value       = google_compute_security_policy.web.id
 }
