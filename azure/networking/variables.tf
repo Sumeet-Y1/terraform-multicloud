@@ -44,3 +44,27 @@ variable "database_subnets" {
     "a" = "10.1.21.0/24"
   }
 }
+
+variable "bastion_subnet_cidr" {
+  description = "CIDR for the AzureBastionSubnet (must be named exactly this, min /26)"
+  type        = string
+  default     = "10.1.250.0/26"
+}
+
+variable "enable_flow_logs" {
+  description = "Enable NSG flow logs for traffic visibility"
+  type        = bool
+  default     = true
+}
+
+variable "flow_log_retention_days" {
+  description = "Number of days to retain NSG flow logs"
+  type        = number
+  default     = 30
+}
+
+variable "storage_account_id" {
+  description = "Storage account ID for flow logs and private endpoint (optional, leave empty to skip)"
+  type        = string
+  default     = ""
+}
