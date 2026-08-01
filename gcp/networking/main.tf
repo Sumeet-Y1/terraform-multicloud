@@ -29,24 +29,24 @@ resource "google_compute_subnetwork" "public" {
     content {
       aggregation_interval = "INTERVAL_5_SEC"
       flow_sampling        = 0.5
-      metadata              = "INCLUDE_ALL_METADATA"
+      metadata             = "INCLUDE_ALL_METADATA"
     }
   }
 }
 
 resource "google_compute_subnetwork" "private" {
-  name                      = "${var.environment}-private-subnet"
-  ip_cidr_range             = var.private_subnet_cidr
-  region                    = var.region
-  network                   = google_compute_network.main.id
-  private_ip_google_access  = true
+  name                     = "${var.environment}-private-subnet"
+  ip_cidr_range            = var.private_subnet_cidr
+  region                   = var.region
+  network                  = google_compute_network.main.id
+  private_ip_google_access = true
 
   dynamic "log_config" {
     for_each = var.enable_flow_logs ? [1] : []
     content {
       aggregation_interval = "INTERVAL_5_SEC"
       flow_sampling        = 0.5
-      metadata              = "INCLUDE_ALL_METADATA"
+      metadata             = "INCLUDE_ALL_METADATA"
     }
   }
 }
@@ -63,7 +63,7 @@ resource "google_compute_subnetwork" "database" {
     content {
       aggregation_interval = "INTERVAL_5_SEC"
       flow_sampling        = 0.5
-      metadata              = "INCLUDE_ALL_METADATA"
+      metadata             = "INCLUDE_ALL_METADATA"
     }
   }
 }
@@ -93,9 +93,27 @@ resource "google_compute_router_nat" "main" {
   }
 }
 
-# ---------- FIREWALL RULES ----------
-# Priorities matter in GCP - lower number = evaluated first. Default is 1000.
+# ---------- PRIVATE SERVICE CONNECT (GCS access without internet) ----------
+# Reserves an internal IP range for Google APIs, then routes private-subnet traffic
+# to Google services (like Cloud Storage) entirely within Google's network.
+resource "google_compute_global_address" "private_service_connect" {
+  name          = "${var.environment}-psc-ip-range"
+  purpose       = "PRIVATE_SERVICE_CONNECT"
+  address_type  = "INTERNAL"
+  address       = "10.2.100.0"
+  prefix_length = 24
+  network       = google_compute_network.main.id
+}
 
+resource "google_compute_global_forwarding_rule" "private_service_connect" {
+  name                  = "${var.environment}-psc-endpoint"
+  target                = "all-apis"
+  network               = google_compute_network.main.id
+  ip_address            = google_compute_global_address.private_service_connect.id
+  load_balancing_scheme = ""
+}
+
+# ---------- FIREWALL RULES ----------
 resource "google_compute_firewall" "allow_web" {
   name     = "${var.environment}-allow-web"
   network  = google_compute_network.main.id
@@ -150,11 +168,10 @@ resource "google_compute_firewall" "allow_db_from_app" {
   }
 }
 
-# Bastion host access — SSH only from trusted IP ranges, never 0.0.0.0/0
 resource "google_compute_firewall" "allow_bastion_ssh" {
   name     = "${var.environment}-allow-bastion-ssh"
   network  = google_compute_network.main.id
-  priority = 800 # evaluated before the general rules above
+  priority = 800
 
   allow {
     protocol = "tcp"
@@ -169,7 +186,6 @@ resource "google_compute_firewall" "allow_bastion_ssh" {
   }
 }
 
-# Allow instances tagged "app" to be reached via SSH ONLY from the bastion, never externally
 resource "google_compute_firewall" "allow_ssh_from_bastion" {
   name     = "${var.environment}-allow-ssh-from-bastion"
   network  = google_compute_network.main.id
@@ -188,12 +204,10 @@ resource "google_compute_firewall" "allow_ssh_from_bastion" {
   }
 }
 
-# Explicit deny-all for anything not matched above (GCP denies by default anyway,
-# but an explicit low-priority deny makes the intent visible for anyone reading the config)
 resource "google_compute_firewall" "deny_all_ingress" {
-  name     = "${var.environment}-deny-all-ingress"
-  network  = google_compute_network.main.id
-  priority = 65534
+  name      = "${var.environment}-deny-all-ingress"
+  network   = google_compute_network.main.id
+  priority  = 65534
   direction = "INGRESS"
 
   deny {
@@ -201,4 +215,59 @@ resource "google_compute_firewall" "deny_all_ingress" {
   }
 
   source_ranges = ["0.0.0.0/0"]
+}
+
+# ---------- CLOUD ARMOR (WAF / DDoS protection for the web tier) ----------
+resource "google_compute_security_policy" "web" {
+  name = "${var.environment}-web-armor-policy"
+
+  # Default rule - allow everything not explicitly matched below
+  rule {
+    action   = "allow"
+    priority = "2147483647"
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+    description = "Default allow rule"
+  }
+
+  # Rate limiting - throttle clients exceeding the threshold (basic DDoS mitigation)
+  rule {
+    action   = "throttle"
+    priority = "1000"
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+    rate_limit_options {
+      conform_action = "allow"
+      exceed_action  = "deny(429)"
+      enforce_on_key = "IP"
+      rate_limit_threshold {
+        count        = var.rate_limit_threshold
+        interval_sec = 60
+      }
+    }
+    description = "Rate limit per client IP"
+  }
+
+  # Geo-blocking - deny specific countries if configured
+  dynamic "rule" {
+    for_each = length(var.blocked_countries) > 0 ? [1] : []
+    content {
+      action   = "deny(403)"
+      priority = "900"
+      match {
+        expr {
+          expression = "origin.region_code in ${jsonencode(var.blocked_countries)}"
+        }
+      }
+      description = "Block specific countries"
+    }
+  }
 }
