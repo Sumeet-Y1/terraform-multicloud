@@ -1,14 +1,14 @@
-output "bucket_name" {
-  description = "Name of the storage bucket"
-  value       = google_storage_bucket.main.name
+output "bucket_names" {
+  description = "Names of all created buckets, keyed by purpose"
+  value       = { for k, b in google_storage_bucket.main : k => b.name }
 }
 
-output "bucket_url" {
-  description = "GCS URL of the bucket (gs://...)"
-  value       = google_storage_bucket.main.url
+output "bucket_urls" {
+  description = "GCS URLs (gs://...) of all created buckets, keyed by purpose"
+  value       = { for k, b in google_storage_bucket.main : k => b.url }
 }
 
-output "bucket_self_link" {
-  description = "Self link of the bucket"
-  value       = google_storage_bucket.main.self_link
+output "data_bucket_self_link" {
+  description = "Self link of the data bucket specifically"
+  value       = google_storage_bucket.main["data"].self_link
 }
