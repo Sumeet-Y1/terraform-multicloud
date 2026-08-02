@@ -1,14 +1,19 @@
-output "instance_ids" {
-  description = "IDs of the created EC2 instances"
-  value       = aws_instance.main[*].id
+output "launch_template_id" {
+  description = "ID of the launch template"
+  value       = aws_launch_template.main.id
 }
 
-output "instance_private_ips" {
-  description = "Private IP addresses of the created EC2 instances"
-  value       = aws_instance.main[*].private_ip
+output "autoscaling_group_id" {
+  description = "ID of the Auto Scaling Group"
+  value       = aws_autoscaling_group.main.id
+}
+
+output "autoscaling_group_name" {
+  description = "Name of the Auto Scaling Group"
+  value       = aws_autoscaling_group.main.name
 }
 
 output "ami_used" {
-  description = "AMI ID actually used for the instances"
+  description = "AMI ID actually used for instances"
   value       = local.ami_id
 }
